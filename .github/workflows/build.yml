@@ -69,22 +69,23 @@ jobs:
           make -j$(nproc)
           make install
 
-      - name: Build teensy_loader_cli (Static armv7a)
+      - name: Build teensy_loader_cli (Static for 3rd-party, PIE for Android)
         run: |
-          # 静态编译 teensy_loader_cli.c
-          # -DUSE_LIBUSB: 开启 Linux/Android 的 libusb 代码分支
-          # -static: 强制静态链接
-          # -llog: libusb 在 Android 上依赖系统的 log 库
-          $CC -O2 -Wall -DUSE_LIBUSB -static \
+          # 1. 移除全局 -static 标志，以允许链接 Android 系统的 liblog.so 和 libc.so
+          # 2. Android 5.0+ 强制要求可执行文件为 PIE (Position Independent Executable)，NDK 默认开启
+          # 3. 直接指定 .a 文件的绝对路径，确保 libusb 绝对是以静态方式打入二进制文件中
+          
+          $CC -O2 -Wall -DUSE_LIBUSB \
               teensy_loader_cli.c -o teensy_loader_cli \
               -I$PREFIX_DIR/include \
-              -L$PREFIX_DIR/lib \
-              -lusb -lusb-1.0 -llog
+              $PREFIX_DIR/lib/libusb.a \
+              $PREFIX_DIR/lib/libusb-1.0.a \
+              -llog
           
           # 剔除调试信息，减小体积
           $STRIP teensy_loader_cli
 
-          # 验证文件格式 (确保它是 32-bit ARM ELF 静态链接文件)
+          # 验证文件格式
           file teensy_loader_cli
 
       - name: Upload Artifact
