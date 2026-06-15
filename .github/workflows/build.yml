@@ -1,0 +1,94 @@
+name: Build Android armv7a Static
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  build:
+    name: Build for Android 11 (armv7a)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config
+
+      - name: Setup Android NDK Environment
+        run: |
+          # GitHub Actions 的 ubuntu-latest 镜像已经预装了 Android NDK
+          NDK_PATH=$ANDROID_NDK_LATEST_HOME
+          TOOLCHAIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64
+          
+          # Android 11 对应 API Level 30
+          API=30
+          TARGET_HOST=arm-linux-androideabi
+          CC_TARGET=armv7a-linux-androideabi$API
+          
+          # 导出工具链到环境变量
+          echo "CC=$TOOLCHAIN/bin/$CC_TARGET-clang" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+          echo "HOST_SYS=$TARGET_HOST" >> $GITHUB_ENV
+          
+          # 创建依赖库的安装目录
+          echo "PREFIX_DIR=$HOME/android_usb_build" >> $GITHUB_ENV
+          # 确保 pkg-config 能找到刚刚编译的 libusb-1.0
+          echo "PKG_CONFIG_PATH=$HOME/android_usb_build/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Build libusb-1.0 (Static)
+        run: |
+          git clone https://github.com/libusb/libusb.git
+          cd libusb
+          # checkout 到稳定的版本标签，避免主分支偶尔的构建问题
+          git checkout v1.0.26 
+          ./autogen.sh --host=$HOST_SYS \
+                       --prefix=$PREFIX_DIR \
+                       --disable-shared \
+                       --enable-static \
+                       --disable-udev # Android 没有 udev
+          make -j$(nproc)
+          make install
+
+      - name: Build libusb-compat-0.1 (Static)
+        run: |
+          git clone https://github.com/libusb/libusb-compat-0.1.git
+          cd libusb-compat-0.1
+          ./autogen.sh --host=$HOST_SYS \
+                       --prefix=$PREFIX_DIR \
+                       --disable-shared \
+                       --enable-static
+          make -j$(nproc)
+          make install
+
+      - name: Build teensy_loader_cli (Static armv7a)
+        run: |
+          # 静态编译 teensy_loader_cli.c
+          # -DUSE_LIBUSB: 开启 Linux/Android 的 libusb 代码分支
+          # -static: 强制静态链接
+          # -llog: libusb 在 Android 上依赖系统的 log 库
+          $CC -O2 -Wall -DUSE_LIBUSB -static \
+              teensy_loader_cli.c -o teensy_loader_cli \
+              -I$PREFIX_DIR/include \
+              -L$PREFIX_DIR/lib \
+              -lusb -lusb-1.0 -llog
+          
+          # 剔除调试信息，减小体积
+          $STRIP teensy_loader_cli
+
+          # 验证文件格式 (确保它是 32-bit ARM ELF 静态链接文件)
+          file teensy_loader_cli
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: teensy_loader_cli-android-api30-armv7a
+          path: teensy_loader_cli
