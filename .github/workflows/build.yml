@@ -1,15 +1,22 @@
-name: Build Android armv7a Static
+name: Build Android armv7a Static & Release
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch: # 允许手动触发
+    tags:
+      - 'v*' # 当推送形如 v1.0.0 的 tag 时自动触发
+  workflow_dispatch: # 允许手动在 Actions 页面触发
+    inputs:
+      release_tag:
+        description: '发布版本号 (如 nightly 或 v1.0.1)'
+        required: true
+        default: 'latest'
+
+permissions:
+  contents: write # 必须：赋予创建 Release 和上传文件的权限
 
 jobs:
-  build:
-    name: Build for Android 11 (armv7a)
+  build-and-release:
+    name: Build and Release for Android 11 (armv7a)
     runs-on: ubuntu-latest
 
     steps:
@@ -23,7 +30,6 @@ jobs:
 
       - name: Setup Android NDK Environment
         run: |
-          # GitHub Actions 的 ubuntu-latest 镜像已经预装了 Android NDK
           NDK_PATH=$ANDROID_NDK_LATEST_HOME
           TOOLCHAIN=$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64
           
@@ -32,29 +38,25 @@ jobs:
           TARGET_HOST=arm-linux-androideabi
           CC_TARGET=armv7a-linux-androideabi$API
           
-          # 导出工具链到环境变量
           echo "CC=$TOOLCHAIN/bin/$CC_TARGET-clang" >> $GITHUB_ENV
           echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
           echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
           echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
           echo "HOST_SYS=$TARGET_HOST" >> $GITHUB_ENV
           
-          # 创建依赖库的安装目录
           echo "PREFIX_DIR=$HOME/android_usb_build" >> $GITHUB_ENV
-          # 确保 pkg-config 能找到刚刚编译的 libusb-1.0
           echo "PKG_CONFIG_PATH=$HOME/android_usb_build/lib/pkgconfig" >> $GITHUB_ENV
 
       - name: Build libusb-1.0 (Static)
         run: |
           git clone https://github.com/libusb/libusb.git
           cd libusb
-          # checkout 到稳定的版本标签，避免主分支偶尔的构建问题
           git checkout v1.0.26 
           ./autogen.sh --host=$HOST_SYS \
                        --prefix=$PREFIX_DIR \
                        --disable-shared \
                        --enable-static \
-                       --disable-udev # Android 没有 udev
+                       --disable-udev
           make -j$(nproc)
           make install
 
@@ -69,12 +71,9 @@ jobs:
           make -j$(nproc)
           make install
 
-      - name: Build teensy_loader_cli (Static for 3rd-party, PIE for Android)
+      - name: Build teensy_loader_cli (Static for 3rd-party)
         run: |
-          # 1. 移除全局 -static 标志，以允许链接 Android 系统的 liblog.so 和 libc.so
-          # 2. Android 5.0+ 强制要求可执行文件为 PIE (Position Independent Executable)，NDK 默认开启
-          # 3. 直接指定 .a 文件的绝对路径，确保 libusb 绝对是以静态方式打入二进制文件中
-          
+          # 静态链接 libusb，动态链接系统级 liblog
           $CC -O2 -Wall -DUSE_LIBUSB \
               teensy_loader_cli.c -o teensy_loader_cli \
               -I$PREFIX_DIR/include \
@@ -87,9 +86,15 @@ jobs:
 
           # 验证文件格式
           file teensy_loader_cli
+          
+          # 重命名以便于在 Release 中识别
+          mv teensy_loader_cli teensy_loader_cli-android-armv7a
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: teensy_loader_cli-android-api30-armv7a
-          path: teensy_loader_cli
+          # 上传未经压缩的原始二进制文件
+          files: teensy_loader_cli-android-armv7a
+          # 如果是 tag 触发则使用 tag，如果是手动触发则使用输入的 tag 或 latest
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.release_tag }}
+          name: Release ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.release_tag }}
